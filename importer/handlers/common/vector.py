@@ -146,7 +146,10 @@ class BaseVectorFileHandler(BaseHandler):
         Define the ogr2ogr command to be executed.
         This is a default command that is needed to import a vector file
         """
-        _uri = settings.GEODATABASE_URL.replace("postgis://", "")
+        if "postgis" in settings.GEODATABASE_URL:
+            _uri = settings.GEODATABASE_URL.replace("postgis://", "")
+        if "postgresql" in settings.GEODATABASE_URL:
+            _uri = settings.GEODATABASE_URL.replace("postgresql://", "")
         db_user, db_password = _uri.split("@")[0].split(":")
         db_host, db_port = _uri.split("@")[1].split("/")[0].split(":")
         db_name = _uri.split("@")[1].split("/")[1]
