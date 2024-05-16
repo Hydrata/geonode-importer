@@ -41,7 +41,21 @@ class KMLFileHandler(BaseVectorFileHandler):
 
     @property
     def supported_file_extension_config(self):
-        return {"id": "kml", "label": "KML/KMZ", "format": "archive", "ext": ["kml", "kmz"]}
+        return {
+            "id": "kml",
+            "label": "KML/KMZ",
+            "format": "vector",
+            "ext": ["kml", "kmz"],
+        }
+
+    @property
+    def can_handle_xml_file(self) -> bool:
+        """
+        True or false if the handler is able to handle XML file
+        By default a common workflow is always defined
+        To be override if some expection are needed
+        """
+        return False
 
     @staticmethod
     def can_handle(_data) -> bool:
@@ -121,4 +135,4 @@ class KMLFileHandler(BaseVectorFileHandler):
         base_command = BaseVectorFileHandler.create_ogr2ogr_command(
             files, original_name, ovverwrite_layer, alternate
         )
-        return f"{base_command } -lco DIM=2 -lco GEOMETRY_NAME={BaseVectorFileHandler().default_geometry_column_name} --config OGR_SKIP LibKML"
+        return f"{base_command } -lco GEOMETRY_NAME={BaseVectorFileHandler().default_geometry_column_name} --config OGR_SKIP LibKML"

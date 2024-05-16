@@ -34,8 +34,8 @@ class BaseClassEnd2End(TransactionImporterBaseTestSupport):
             "prj_file": f"{file_path}/san_andres_y_providencia_highway.prj",
             "shx_file": f"{file_path}/san_andres_y_providencia_highway.shx",
         }
-        cls.url_create = reverse('importer_upload')
-        ogc_server_settings = OGC_Servers_Handler(settings.OGC_SERVER)['default']
+        cls.url_create = reverse("importer_upload")
+        ogc_server_settings = OGC_Servers_Handler(settings.OGC_SERVER)["default"]
         cls.valid_kml = f"{project_dir}/tests/fixture/valid.kml"
         cls.url_create = reverse("importer_upload")
         ogc_server_settings = OGC_Servers_Handler(settings.OGC_SERVER)["default"]
@@ -47,27 +47,19 @@ class BaseClassEnd2End(TransactionImporterBaseTestSupport):
         )
 
     def setUp(self) -> None:
-        Dataset.objects.filter(
-            title__in=[
-                "title_of_the_cloned_resource",
-                "stazioni_metropolitana",
-                "valid",
-            ]
-        ).delete()
+        for el in Dataset.objects.all():
+            el.delete()
+
         self.admin = get_user_model().objects.get(username="admin")
 
     def tearDown(self) -> None:
-        Dataset.objects.filter(
-            title__in=[
-                "title_of_the_cloned_resource",
-                "stazioni_metropolitana",
-                "valid",
-            ]
-        ).delete()
+        for el in Dataset.objects.all():
+            el.delete()
 
     def _assertCloning(self, initial_name):
         # getting the geonode resource
-        dataset = Dataset.objects.get(alternate__icontains=f'geonode:{initial_name}')
+        print(initial_name)
+        dataset = Dataset.objects.get(alternate__icontains=f"geonode:{initial_name}")
         prev_dataset_count = Dataset.objects.count()
         self.client.force_login(get_user_model().objects.get(username="admin"))
         # creating the url and login
@@ -116,6 +108,7 @@ class BaseClassEnd2End(TransactionImporterBaseTestSupport):
     def _wait_execution(self, response, _id="execution_id"):
         # if is async, we must wait. It will wait for 1 min before raise exception
         if ast.literal_eval(os.getenv("ASYNC_SIGNALS", "False")):
+            print("is false")
             tentative = 1
             while (
                 ExecutionRequest.objects.get(exec_id=response.json().get(_id))
@@ -128,11 +121,18 @@ class BaseClassEnd2End(TransactionImporterBaseTestSupport):
             ExecutionRequest.objects.get(exec_id=response.json().get(_id)).status
             != ExecutionRequest.STATUS_FINISHED
         ):
+            print(ExecutionRequest.objects.get(exec_id=response.json().get(_id)))
             raise Exception("Async still in progress after 1 min of waiting")
 
 
 class ImporterCopyEnd2EndGpkgTest(BaseClassEnd2End):
-    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
+    @mock.patch.dict(
+        os.environ,
+        {
+            "GEONODE_GEODATABASE": "test_geonode_data",
+            "IMPORTER_ENABLE_DYN_MODELS": "True",
+        },
+    )
     @override_settings(
         GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data"
     )
@@ -149,7 +149,13 @@ class ImporterCopyEnd2EndGpkgTest(BaseClassEnd2End):
 
 
 class ImporterCopyEnd2EndGeoJsonTest(BaseClassEnd2End):
-    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
+    @mock.patch.dict(
+        os.environ,
+        {
+            "GEONODE_GEODATABASE": "test_geonode_data",
+            "IMPORTER_ENABLE_DYN_MODELS": "True",
+        },
+    )
     @override_settings(
         GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data"
     )
@@ -165,11 +171,20 @@ class ImporterCopyEnd2EndGeoJsonTest(BaseClassEnd2End):
 
 
 class ImporterCopyEnd2EndShapeFileTest(BaseClassEnd2End):
-
-    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
-    @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
+    @mock.patch.dict(
+        os.environ,
+        {
+            "GEONODE_GEODATABASE": "test_geonode_data",
+            "IMPORTER_ENABLE_DYN_MODELS": "True",
+        },
+    )
+    @override_settings(
+        GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data"
+    )
     def test_copy_dataset_from_shapefile(self):
-        payload = {_filename: open(_file, 'rb') for _filename, _file in self.valid_shp.items()}
+        payload = {
+            _filename: open(_file, "rb") for _filename, _file in self.valid_shp.items()
+        }
         initial_name = "san_andres_y_providencia_highway"
         # first we need to import a resource
         with transaction.atomic():
@@ -178,15 +193,21 @@ class ImporterCopyEnd2EndShapeFileTest(BaseClassEnd2End):
 
 
 class ImporterCopyEnd2EndKMLTest(BaseClassEnd2End):
-    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
+    @mock.patch.dict(
+        os.environ,
+        {
+            "GEONODE_GEODATABASE": "test_geonode_data",
+            "IMPORTER_ENABLE_DYN_MODELS": "True",
+        },
+    )
     @override_settings(
         GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data"
     )
-    def test_copy_dataset_from_geojson(self):
+    def test_copy_dataset_from_kml(self):
         payload = {
             "base_file": open(self.valid_kml, "rb"),
         }
-        initial_name = "valid"
+        initial_name = "sample_point_dataset"
         # first we need to import a resource
         with transaction.atomic():
             self._import_resource(payload, initial_name)

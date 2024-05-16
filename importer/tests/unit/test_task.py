@@ -1,5 +1,9 @@
+import os
+import shutil
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase
+from django.test.utils import override_settings
 from unittest.mock import patch
 from importer.api.exception import InvalidInputFileException
 
@@ -13,7 +17,7 @@ from importer.celery_tasks import (
     import_resource,
     orchestrator,
     publish_resource,
-    rollback
+    rollback,
 )
 from geonode.resource.models import ExecutionRequest
 from geonode.layers.models import Dataset
@@ -22,14 +26,17 @@ from geonode.base.models import ResourceBase
 from geonode.base.populate_test_data import create_single_dataset
 from dynamic_models.models import ModelSchema, FieldSchema
 from dynamic_models.exceptions import DynamicModelError, InvalidFieldNameError
+from importer.models import ResourceHandlerInfo
 
-from importer.tests.utils import ImporterBaseTestSupport, TransactionImporterBaseTestSupport
+from importer.tests.utils import (
+    ImporterBaseTestSupport,
+    TransactionImporterBaseTestSupport,
+)
 
 # Create your tests here.
 
 
 class TestCeleryTasks(ImporterBaseTestSupport):
-
     def setUp(self):
         self.user = get_user_model().objects.first()
         self.exec_id = orchestrator.create_execution_request(
@@ -167,10 +174,10 @@ class TestCeleryTasks(ImporterBaseTestSupport):
         extract_resource_to_publish,
         importer,
     ):
-        '''
+        """
         Publish resource should be called since the resource does not exists in geoserver
         even if an overwrite is required
-        '''
+        """
         try:
             publish_resources.return_value = True
             extract_resource_to_publish.return_value = [
@@ -219,42 +226,44 @@ class TestCeleryTasks(ImporterBaseTestSupport):
         extract_resource_to_publish,
         importer,
     ):
-        '''
+        """
         Publish resource should be called since the resource does not exists in geoserver
-        even if an overwrite is required
-        '''
+        even if an overwrite is required.
+        Should raise error if the crs is not found
+        """
         try:
-            get_resource.return_falue = True
-            publish_resources.return_value = True
-            extract_resource_to_publish.return_value = [
-                {"crs": 12345, "name": "dataset3"}
-            ]
-            exec_id = orchestrator.create_execution_request(
-                user=get_user_model().objects.get(username=self.user),
-                func_name="dummy_func",
-                step="dummy_step",
-                legacy_upload_name="dummy",
-                input_params={
-                    "files": {"base_file": "/filepath"},
-                    "overwrite_existing_layer": True,
-                    "store_spatial_files": True,
-                },
-            )
-            publish_resource(
-                str(exec_id),
-                resource_type="gpkg",
-                step_name="publish_resource",
-                layer_name="dataset3",
-                alternate="alternate_dataset3",
-                action=ExecutionRequestAction.IMPORT.value,
-                handler_module_path="importer.handlers.gpkg.handler.GPKGFileHandler",
-            )
+            with self.assertRaises(Exception):
+                get_resource.return_falue = True
+                publish_resources.return_value = True
+                extract_resource_to_publish.return_value = [
+                    {"crs": 4326, "name": "dataset3"}
+                ]
+                exec_id = orchestrator.create_execution_request(
+                    user=get_user_model().objects.get(username=self.user),
+                    func_name="dummy_func",
+                    step="dummy_step",
+                    legacy_upload_name="dummy",
+                    input_params={
+                        "files": {"base_file": "/filepath"},
+                        "overwrite_existing_layer": True,
+                        "store_spatial_files": True,
+                    },
+                )
+                publish_resource(
+                    str(exec_id),
+                    resource_type="gpkg",
+                    step_name="publish_resource",
+                    layer_name="dataset3",
+                    alternate="alternate_dataset3",
+                    action=ExecutionRequestAction.IMPORT.value,
+                    handler_module_path="importer.handlers.gpkg.handler.GPKGFileHandler",
+                )
 
-            # Evaluation
-            req = ExecutionRequest.objects.get(exec_id=str(exec_id))
-            self.assertEqual("importer.publish_resource", req.step)
-            publish_resources.assert_not_called()
-            importer.assert_called_once()
+                # Evaluation
+                req = ExecutionRequest.objects.get(exec_id=str(exec_id))
+                self.assertEqual("importer.publish_resource", req.step)
+                publish_resources.assert_not_called()
+                importer.assert_called_once()
 
         finally:
             # cleanup
@@ -264,7 +273,6 @@ class TestCeleryTasks(ImporterBaseTestSupport):
     @patch("importer.celery_tasks.import_orchestrator.apply_async")
     def test_create_geonode_resource(self, import_orchestrator):
         try:
-
             alternate = "geonode:alternate_foo_dataset"
             self.assertFalse(Dataset.objects.filter(alternate=alternate).exists())
 
@@ -291,11 +299,10 @@ class TestCeleryTasks(ImporterBaseTestSupport):
             if Dataset.objects.filter(alternate=alternate).exists():
                 Dataset.objects.filter(alternate=alternate).delete()
 
-    @patch("importer.celery_tasks.import_orchestrator.apply_async")
+    @patch("importer.celery_tasks.call_rollback_function")
     def test_copy_geonode_resource_should_raise_exeption_if_the_alternate_not_exists(
-        self, async_call
+        self, call_rollback_function
     ):
-
         with self.assertRaises(Exception):
             copy_geonode_resource(
                 str(self.exec_id),
@@ -309,7 +316,7 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                     "new_dataset_alternate": "geonode:schema_copy_example_dataset",  # this alternate is generated dring the geonode resource copy
                 },
             )
-        async_call.assert_not_called()
+        call_rollback_function.assert_called_once()
 
     @patch("importer.celery_tasks.import_orchestrator.apply_async")
     def test_copy_geonode_resource(self, async_call):
@@ -345,20 +352,33 @@ class TestCeleryTasks(ImporterBaseTestSupport):
 
     @patch("importer.handlers.gpkg.handler.GPKGFileHandler._import_resource_rollback")
     @patch("importer.handlers.gpkg.handler.GPKGFileHandler._publish_resource_rollback")
-    @patch("importer.handlers.gpkg.handler.GPKGFileHandler._create_geonode_resource_rollback")
+    @patch(
+        "importer.handlers.gpkg.handler.GPKGFileHandler._create_geonode_resource_rollback"
+    )
+    @override_settings(MEDIA_ROOT="/tmp/")
     def test_rollback_works_as_expected_vector_step(
         self,
         _create_geonode_resource_rollback,
         _publish_resource_rollback,
-        _import_resource_rollback
+        _import_resource_rollback,
     ):
-        '''
+        """
         rollback should remove the resource based on the step it has reached
-        '''
+        """
         test_config = [
             ("importer.import_resource", [_import_resource_rollback]),
-            ("importer.publish_resource", [_import_resource_rollback, _publish_resource_rollback]),
-            ("importer.create_geonode_resource", [_import_resource_rollback, _publish_resource_rollback, _create_geonode_resource_rollback])
+            (
+                "importer.publish_resource",
+                [_import_resource_rollback, _publish_resource_rollback],
+            ),
+            (
+                "importer.create_geonode_resource",
+                [
+                    _import_resource_rollback,
+                    _publish_resource_rollback,
+                    _create_geonode_resource_rollback,
+                ],
+            ),
         ]
         for conf in test_config:
             try:
@@ -366,12 +386,12 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                     user=get_user_model().objects.get(username=self.user),
                     func_name="dummy_func",
                     step=conf[0],  # step name
-                    action='import',
+                    action="import",
                     input_params={
                         "files": {"base_file": "/filepath"},
                         "overwrite_existing_layer": True,
                         "store_spatial_files": True,
-                        "handler_module_path": "importer.handlers.gpkg.handler.GPKGFileHandler"
+                        "handler_module_path": "importer.handlers.gpkg.handler.GPKGFileHandler",
                     },
                 )
                 rollback(str(exec_id))
@@ -379,7 +399,7 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                 # Evaluation
                 req = ExecutionRequest.objects.get(exec_id=str(exec_id))
                 self.assertEqual("importer.rollback", req.step)
-                self.assertTrue(req.status=='failed')
+                self.assertTrue(req.status == "failed")
                 for expected_function in conf[1]:
                     expected_function.assert_called_once()
                     expected_function.reset_mock()
@@ -388,23 +408,39 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                 if exec_id:
                     ExecutionRequest.objects.filter(exec_id=str(exec_id)).delete()
 
-
-    @patch("importer.handlers.geotiff.handler.GeoTiffFileHandler._import_resource_rollback")
-    @patch("importer.handlers.geotiff.handler.GeoTiffFileHandler._publish_resource_rollback")
-    @patch("importer.handlers.geotiff.handler.GeoTiffFileHandler._create_geonode_resource_rollback")
+    @patch(
+        "importer.handlers.geotiff.handler.GeoTiffFileHandler._import_resource_rollback"
+    )
+    @patch(
+        "importer.handlers.geotiff.handler.GeoTiffFileHandler._publish_resource_rollback"
+    )
+    @patch(
+        "importer.handlers.geotiff.handler.GeoTiffFileHandler._create_geonode_resource_rollback"
+    )
+    @override_settings(MEDIA_ROOT="/tmp/")
     def test_rollback_works_as_expected_raster(
         self,
         _create_geonode_resource_rollback,
         _publish_resource_rollback,
-        _import_resource_rollback
+        _import_resource_rollback,
     ):
-        '''
+        """
         rollback should remove the resource based on the step it has reached
-        '''
+        """
         test_config = [
             ("importer.import_resource", [_import_resource_rollback]),
-            ("importer.publish_resource", [_import_resource_rollback, _publish_resource_rollback]),
-            ("importer.create_geonode_resource", [_import_resource_rollback, _publish_resource_rollback, _create_geonode_resource_rollback])
+            (
+                "importer.publish_resource",
+                [_import_resource_rollback, _publish_resource_rollback],
+            ),
+            (
+                "importer.create_geonode_resource",
+                [
+                    _import_resource_rollback,
+                    _publish_resource_rollback,
+                    _create_geonode_resource_rollback,
+                ],
+            ),
         ]
         for conf in test_config:
             try:
@@ -412,12 +448,12 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                     user=get_user_model().objects.get(username=self.user),
                     func_name="dummy_func",
                     step=conf[0],  # step name
-                    action='import',
+                    action="import",
                     input_params={
-                        "files": {"base_file": "/filepath"},
+                        "files": {"base_file": "/tmp/filepath"},
                         "overwrite_existing_layer": True,
                         "store_spatial_files": True,
-                        "handler_module_path": "importer.handlers.geotiff.handler.GeoTiffFileHandler"
+                        "handler_module_path": "importer.handlers.geotiff.handler.GeoTiffFileHandler",
                     },
                 )
                 rollback(str(exec_id))
@@ -425,7 +461,7 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                 # Evaluation
                 req = ExecutionRequest.objects.get(exec_id=str(exec_id))
                 self.assertEqual("importer.rollback", req.step)
-                self.assertTrue(req.status=='failed')
+                self.assertTrue(req.status == "failed")
                 for expected_function in conf[1]:
                     expected_function.assert_called_once()
                     expected_function.reset_mock()
@@ -433,6 +469,39 @@ class TestCeleryTasks(ImporterBaseTestSupport):
                 # cleanup
                 if exec_id:
                     ExecutionRequest.objects.filter(exec_id=str(exec_id)).delete()
+
+    @override_settings(MEDIA_ROOT="/tmp/")
+    def test_import_metadata_should_work_as_expected(self):
+        handler = "importer.handlers.xml.handler.XMLFileHandler"
+        # lets copy the file to the temporary folder
+        # later will be removed
+        valid_xml = f"{settings.PROJECT_ROOT}/base/fixtures/test_xml.xml"
+        shutil.copy(valid_xml, "/tmp")
+
+        user, _ = get_user_model().objects.get_or_create(username="admin")
+        valid_files = {"base_file": valid_xml, "xml_file": valid_xml}
+
+        layer = create_single_dataset("test_dataset_importer")
+        exec_id = orchestrator.create_execution_request(
+            user=get_user_model().objects.first(),
+            func_name="funct1",
+            step="step",
+            input_params={
+                "files": valid_files,
+                "dataset_title": layer.alternate,
+                "skip_existing_layer": True,
+                "handler_module_path": str(handler),
+            },
+        )
+        ResourceHandlerInfo.objects.create(
+            resource=layer,
+            handler_module_path="importer.handlers.shapefile.handler.ShapeFileHandler",
+        )
+
+        import_resource(str(exec_id), handler, "import")
+
+        layer.refresh_from_db()
+        self.assertEqual(layer.title, "test_dataset")
 
 
 class TestDynamicModelSchema(TransactionImporterBaseTestSupport):
@@ -486,7 +555,10 @@ class TestDynamicModelSchema(TransactionImporterBaseTestSupport):
                     layer_name="test_layer",
                 )
 
-            expected_msg = "Error during the field creation. The field or class_name is None {'name': 'field1', 'class_name': None, 'null': True} for test_layer " + f"for execution {name}"
+            expected_msg = (
+                "Error during the field creation. The field or class_name is None {'name': 'field1', 'class_name': None, 'null': True} for test_layer "
+                + f"for execution {name}"
+            )
             self.assertEqual(expected_msg, str(_exc.exception))
         finally:
             ModelSchema.objects.filter(name=f"schema_{name}").delete()
@@ -521,12 +593,15 @@ class TestDynamicModelSchema(TransactionImporterBaseTestSupport):
             FieldSchema.objects.filter(name="field1").delete()
 
     @patch("importer.celery_tasks.import_orchestrator.apply_async")
+    @patch.dict(os.environ, {"IMPORTER_ENABLE_DYN_MODELS": "True"})
     def test_copy_dynamic_model_should_work(self, async_call):
         try:
             name = str(self.exec_id)
             # setup model schema to be copied
             schema = ModelSchema.objects.create(
-                name=f"schema_{name}", db_name="datastore", db_table_name=f"schema_{name}"
+                name=f"schema_{name}",
+                db_name="datastore",
+                db_table_name=f"schema_{name}",
             )
             FieldSchema.objects.create(
                 name=f"field_{name}",
@@ -538,8 +613,10 @@ class TestDynamicModelSchema(TransactionImporterBaseTestSupport):
             layer.alternate = f"geonode:schema_{name}"
             layer.save()
 
-            self.assertTrue(ModelSchema.objects.filter(name__icontains=f"schema_").count() == 1)
-            
+            self.assertTrue(
+                ModelSchema.objects.filter(name__icontains="schema_").count() == 1
+            )
+
             copy_dynamic_model(
                 exec_id=str(self.exec_id),
                 actual_step="copy",
@@ -553,17 +630,19 @@ class TestDynamicModelSchema(TransactionImporterBaseTestSupport):
             )
             # the alternate is generated internally
             self.assertTrue(ModelSchema.objects.filter(name=f"schema_{name}").exists())
-            self.assertTrue(ModelSchema.objects.filter(name__icontains=f"schema_").count() == 2)
+            self.assertTrue(
+                ModelSchema.objects.filter(name__icontains="schema_").count() == 2
+            )
 
             schema = ModelSchema.objects.all()
             for val in schema:
-                self.assertEqual(val.name , val.db_table_name)
+                self.assertEqual(val.name, val.db_table_name)
 
             async_call.assert_called_once()
 
         finally:
-            ModelSchema.objects.filter(name=f"schema_").delete()
-            FieldSchema.objects.filter(name=f"field_").delete()
+            ModelSchema.objects.filter(name="schema_").delete()
+            FieldSchema.objects.filter(name="field_").delete()
 
     @patch("importer.celery_tasks.import_orchestrator.apply_async")
     @patch("importer.celery_tasks.connections")

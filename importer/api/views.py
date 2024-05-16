@@ -22,7 +22,7 @@ from django.conf import settings
 from django.urls import reverse
 
 from geonode.resource.enumerator import ExecutionRequestAction
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext_lazy as _
 from dynamic_rest.filters import DynamicFilterBackend, DynamicSortingFilter
 from dynamic_rest.viewsets import DynamicModelViewSet
 from geonode.base.api.filters import DynamicSearchFilter, ExtentFilter, FavoriteFilter
@@ -36,7 +36,6 @@ from geonode.base.api.views import ResourceBaseViewSet
 from geonode.base.models import ResourceBase
 from geonode.storage.manager import StorageManager
 from geonode.upload.api.permissions import UploadPermissionsFilter
-from geonode.upload.api.views import UploadViewSet
 from geonode.upload.utils import UploadLimitValidator
 from importer.api.exception import HandlerException, ImportException
 from importer.api.serializer import ImporterSerializer
@@ -83,7 +82,6 @@ class ImporterViewSet(DynamicModelViewSet):
         return specific_serializer or ImporterSerializer
 
     def create(self, request, *args, **kwargs):
-
         """
         Main function called by the new import flow.
         It received the file via the front end
@@ -120,7 +118,6 @@ class ImporterViewSet(DynamicModelViewSet):
         handler = orchestrator.get_handler(_data)
 
         if _file and handler:
-
             try:
                 # cloning data into a local folder
                 extracted_params, _data = handler.extract_params_from_data(_data)
@@ -151,7 +148,7 @@ class ImporterViewSet(DynamicModelViewSet):
                     legacy_upload_name=_file.name,
                     action=action,
                     name=_file.name,
-                    source='upload'
+                    source=extracted_params.get("source"),
                 )
 
                 sig = import_orchestrator.s(
@@ -169,13 +166,10 @@ class ImporterViewSet(DynamicModelViewSet):
                 logger.exception(e)
                 raise ImportException(detail=e.args[0] if len(e.args) > 0 else e)
 
-        # if is a geopackage we just use the new import flow
-        request.GET._mutable = True
-        return UploadViewSet().upload(request)
+        raise ImportException(detail="No handlers found for this dataset type")
 
 
 class ResourceImporter(DynamicModelViewSet):
-
     authentication_classes = [
         SessionAuthentication,
         BasicAuthentication,
@@ -212,7 +206,6 @@ class ResourceImporter(DynamicModelViewSet):
     def copy(self, request, *args, **kwargs):
         resource = self.get_object()
         if resource.resourcehandlerinfo_set.exists():
-
             handler_module_path = (
                 resource.resourcehandlerinfo_set.first().handler_module_path
             )
@@ -241,7 +234,7 @@ class ResourceImporter(DynamicModelViewSet):
                     **{"handler_module_path": handler_module_path},
                     **extracted_params,
                 },
-                source="importer_copy"
+                source="importer_copy",
             )
 
             sig = import_orchestrator.s(

@@ -41,7 +41,21 @@ class GPKGFileHandler(BaseVectorFileHandler):
 
     @property
     def supported_file_extension_config(self):
-        return {"id": "gpkg", "label": "GeoPackage", "format": "archive", "ext": ["gpkg"]}
+        return {
+            "id": "gpkg",
+            "label": "GeoPackage",
+            "format": "vector",
+            "ext": ["gpkg"],
+        }
+
+    @property
+    def can_handle_xml_file(self) -> bool:
+        """
+        True or false if the handler is able to handle XML file
+        By default a common workflow is always defined
+        To be override if some expection are needed
+        """
+        return False
 
     @staticmethod
     def can_handle(_data) -> bool:
@@ -109,14 +123,12 @@ class GPKGFileHandler(BaseVectorFileHandler):
             error_to_raise = []
             for error in validator[0]:
                 logger.error(error)
-                if 'locations' in error:
-                    error_to_raise.extend(error['locations'])
+                if "locations" in error:
+                    error_to_raise.extend(error["locations"])
                 else:
-                    error_to_raise.append(error['validation_description'])
+                    error_to_raise.append(error["validation_description"])
 
-            raise InvalidGeopackageException(
-                '. '.join(error_to_raise)
-            )
+            raise InvalidGeopackageException(". ".join(error_to_raise))
 
         return True
 
