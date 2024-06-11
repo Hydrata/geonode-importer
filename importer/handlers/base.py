@@ -5,6 +5,8 @@ from typing import List
 from geonode.resource.enumerator import ExecutionRequestAction as exa
 from geonode.layers.models import Dataset
 from importer.utils import ImporterRequestAction as ira
+from django_celery_results.models import TaskResult
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,24 @@ class BaseHandler(ABC):
     def supported_file_extension_config(self):
         return NotImplementedError
 
+    @property
+    def can_handle_xml_file(self) -> bool:
+        """
+        True or false if the handler is able to handle XML file
+        By default a common workflow is always defined
+        To be override if some expection are needed
+        """
+        return True
+
+    @property
+    def can_handle_sld_file(self) -> bool:
+        """
+        True or false if the handler is able to handle SLD file
+        By default a common workflow is always defined
+        To be override if some expection are needed
+        """
+        return True
+
     @staticmethod
     def is_valid(files, user):
         """
@@ -75,10 +95,10 @@ class BaseHandler(ABC):
 
     @staticmethod
     def has_serializer(_data) -> bool:
-        '''
+        """
         This endpoint should return (if set) the custom serializer used in the API
         to validate the input resource
-        '''
+        """
         return None
 
     @staticmethod
@@ -99,11 +119,60 @@ class BaseHandler(ABC):
         """
         return []
 
+    @staticmethod
+    def perform_last_step(execution_id):
+        """
+        Override this method if there is some extra step to perform
+        before considering the execution as completed.
+        For example can be used to trigger an email-send to notify
+        that the execution is completed
+        """
+        from importer.orchestrator import orchestrator
+        from importer.models import ResourceHandlerInfo
+
+        # as last step, we delete the celery task to keep the number of rows under control
+        lower_exec_id = execution_id.replace("-", "_").lower()
+        TaskResult.objects.filter(
+            Q(task_args__icontains=lower_exec_id)
+            | Q(task_kwargs__icontains=lower_exec_id)
+            | Q(result__icontains=lower_exec_id)
+            | Q(task_args__icontains=execution_id)
+            | Q(task_kwargs__icontains=execution_id)
+            | Q(result__icontains=execution_id)
+        ).delete()
+
+        _exec = orchestrator.get_execution_object(execution_id)
+
+        resource_output_params = [
+            {"detail_url": x.resource.detail_url, "id": x.resource.pk}
+            for x in ResourceHandlerInfo.objects.filter(execution_request=_exec)
+        ]
+        _exec.output_params.update({"resources": resource_output_params})
+        _exec.save()
+        return _exec
+
     def fixup_name(self, name):
-        return name.lower().replace("-", "_")\
-            .replace(" ", "_").replace(")", "")\
-            .replace("(", "").replace(",", "")\
-            .replace("&", "").replace(".", "")
+        """
+        Emulate the LAUNDER option in ogr2ogr which will normalize the string.
+        This is enriched with additional transformation for parentesis.
+        The basic normalized function can be found here
+        https://github.com/OSGeo/gdal/blob/0fc262675051b63f96c91ca920d27503655dfb7b/ogr/ogrsf_frmts/pgdump/ogrpgdumpdatasource.cpp#L130  # noqa
+
+        We use replace because it looks to be one of the fasted options:
+        https://stackoverflow.com/questions/3411771/best-way-to-replace-multiple-characters-in-a-string
+        """
+        return (
+            name.lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+            .replace("#", "_")
+            .replace("\\", "_")
+            .replace(".", "")
+            .replace(")", "")
+            .replace("(", "")
+            .replace(",", "")
+            .replace("&", "")[:62]
+        )
 
     def extract_resource_to_publish(self, files, layer_name, alternate, **kwargs):
         """
@@ -114,6 +183,13 @@ class BaseHandler(ABC):
         ]
         """
         return NotImplementedError
+
+    def overwrite_geoserver_resource(self, resource, catalog, store, workspace):
+        """
+        Base method for override the geoserver resource. For vector file usually
+        is not needed since the value are replaced by ogr2ogr
+        """
+        pass
 
     @staticmethod
     def create_error_log(exc, task_name, *args):

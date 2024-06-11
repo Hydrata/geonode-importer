@@ -42,8 +42,8 @@ class GeoJsonFileHandler(BaseVectorFileHandler):
     def supported_file_extension_config(self):
         return {
             "id": "geojson",
-            "label": "GeoJson",
-            "format": "metadata",
+            "label": "GeoJSON",
+            "format": "vector",
             "ext": ["json", "geojson"],
             "optional": ["xml", "sld"],
         }
@@ -105,4 +105,4 @@ class GeoJsonFileHandler(BaseVectorFileHandler):
         base_command = BaseVectorFileHandler.create_ogr2ogr_command(
             files, original_name, ovverwrite_layer, alternate
         )
-        return f"{base_command } -lco DIM=2 -lco GEOMETRY_NAME={BaseVectorFileHandler().default_geometry_column_name}"
+        return f"{base_command } -lco GEOMETRY_NAME={BaseVectorFileHandler().default_geometry_column_name}"

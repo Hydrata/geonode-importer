@@ -1,3 +1,4 @@
+import os
 import uuid
 from celery.canvas import Signature
 from celery import group
@@ -6,6 +7,7 @@ from mock import MagicMock, patch
 from importer.handlers.common.vector import BaseVectorFileHandler, import_with_ogr2ogr
 from django.contrib.auth import get_user_model
 from importer import project_dir
+from importer.handlers.gpkg.handler import GPKGFileHandler
 from importer.orchestrator import orchestrator
 from geonode.base.populate_test_data import create_single_dataset
 from geonode.resource.models import ExecutionRequest
@@ -22,6 +24,7 @@ class TestBaseVectorFileHandler(TestCase):
         cls.handler = BaseVectorFileHandler()
         cls.valid_gpkg = f"{project_dir}/tests/fixture/valid.gpkg"
         cls.invalid_gpkg = f"{project_dir}/tests/fixture/invalid.gpkg"
+        cls.no_crs_gpkg = f"{project_dir}/tests/fixture/noCrsTable.gpkg"
         cls.user, _ = get_user_model().objects.get_or_create(username="admin")
         cls.invalid_files = {"base_file": cls.invalid_gpkg}
         cls.valid_files = {"base_file": cls.valid_gpkg}
@@ -155,9 +158,15 @@ class TestBaseVectorFileHandler(TestCase):
                 input_params={"files": self.valid_files, "skip_existing_layer": True},
             )
 
-            # start the resource import
-            self.handler.import_resource(
-                files=self.valid_files, execution_id=str(exec_id)
+            with self.assertRaises(Exception) as exception:
+                # start the resource import
+                self.handler.import_resource(
+                    files=self.valid_files, execution_id=str(exec_id)
+                )
+            self.assertIn(
+                "No valid layers found",
+                exception.exception.args[0],
+                "No valid layers found.",
             )
 
             celery_chord.assert_not_called()
@@ -225,7 +234,14 @@ class TestBaseVectorFileHandler(TestCase):
 
         _open.assert_called_once()
         _open.assert_called_with(
-            f'/usr/bin/ogr2ogr --config PG_USE_COPY YES -f PostgreSQL PG:" dbname=\'geonode_data\' host=localhost port=5434 user=\'geonode\' password=\'geonode\' " "{self.valid_files.get("base_file")}" -lco DIM=2 -nln alternate "dataset"', stdout=-1, stderr=-1, shell=True # noqa
+            "/usr/bin/ogr2ogr --config PG_USE_COPY YES -f PostgreSQL PG:\" dbname='test_geonode_data' host="
+            + os.getenv("DATABASE_HOST", "localhost")
+            + " port=5432 user='geonode_data' password='geonode_data' \" \""
+            + self.valid_files.get("base_file")
+            + '" -nln alternate "dataset"',
+            stdout=-1,
+            stderr=-1,
+            shell=True,  # noqa
         )
 
     @patch("importer.handlers.common.vector.Popen")
@@ -248,5 +264,89 @@ class TestBaseVectorFileHandler(TestCase):
 
         _open.assert_called_once()
         _open.assert_called_with(
-            f'/usr/bin/ogr2ogr --config PG_USE_COPY YES -f PostgreSQL PG:" dbname=\'geonode_data\' host=localhost port=5434 user=\'geonode\' password=\'geonode\' " "{self.valid_files.get("base_file")}" -lco DIM=2 -nln alternate "dataset"', stdout=-1, stderr=-1, shell=True # noqa
+            "/usr/bin/ogr2ogr --config PG_USE_COPY YES -f PostgreSQL PG:\" dbname='test_geonode_data' host="
+            + os.getenv("DATABASE_HOST", "localhost")
+            + " port=5432 user='geonode_data' password='geonode_data' \" \""
+            + self.valid_files.get("base_file")
+            + '" -nln alternate "dataset"',
+            stdout=-1,
+            stderr=-1,
+            shell=True,  # noqa
         )
+
+    @patch.dict(os.environ, {"OGR2OGR_COPY_WITH_DUMP": "True"}, clear=True)
+    @patch("importer.handlers.common.vector.Popen")
+    def test_import_with_ogr2ogr_without_errors_should_call_the_right_command_if_dump_is_enabled(
+        self, _open
+    ):
+        _uuid = uuid.uuid4()
+
+        comm = MagicMock()
+        comm.communicate.return_value = b"", b""
+        _open.return_value = comm
+
+        _task, alternate, execution_id = import_with_ogr2ogr(
+            execution_id=str(_uuid),
+            files=self.valid_files,
+            original_name="dataset",
+            handler_module_path=str(self.handler),
+            ovverwrite_layer=False,
+            alternate="alternate",
+        )
+
+        self.assertEqual("ogr2ogr", _task)
+        self.assertEqual(alternate, "alternate")
+        self.assertEqual(str(_uuid), execution_id)
+
+        _open.assert_called_once()
+        _call_as_string = _open.mock_calls[0][1][0]
+
+        self.assertTrue("-f PGDump /vsistdout/" in _call_as_string)
+        self.assertTrue("psql -d" in _call_as_string)
+        self.assertFalse("-f PostgreSQL PG" in _call_as_string)
+
+    def test_select_valid_layers(self):
+        """
+        The function should return only the datasets with a geometry
+        The other one are discarded
+        """
+        all_layers = GPKGFileHandler().get_ogr2ogr_driver().Open(self.no_crs_gpkg)
+
+        with self.assertLogs(level="ERROR") as _log:
+            valid_layer = GPKGFileHandler()._select_valid_layers(all_layers)
+
+        self.assertIn(
+            "The following layer layer_styles does not have a Coordinate Reference System (CRS) and will be skipped.",
+            [x.message for x in _log.records],
+        )
+        self.assertEqual(1, len(valid_layer))
+        self.assertEqual("mattia_test", valid_layer[0].GetName())
+
+    def test_perform_last_step(self):
+        """
+        Output params in perform_last_step should return the detail_url and the ID
+        of the resource created
+        """
+        # creating exec_id for the import
+        exec_id = orchestrator.create_execution_request(
+            user=get_user_model().objects.first(),
+            func_name="funct1",
+            step="step",
+            input_params={"files": self.valid_files, "store_spatial_file": True},
+        )
+
+        # create_geonode_resource
+        resource = self.handler.create_geonode_resource(
+            "layer_name",
+            "layer_alternate",
+            str(exec_id),
+        )
+        exec_obj = orchestrator.get_execution_object(str(exec_id))
+        self.handler.create_resourcehandlerinfo(str(self.handler), resource, exec_obj)
+        # calling the last_step
+        self.handler.perform_last_step(str(exec_id))
+        expected_output = {
+            "resources": [{"id": resource.pk, "detail_url": resource.detail_url}]
+        }
+        exec_obj.refresh_from_db()
+        self.assertDictEqual(expected_output, exec_obj.output_params)
